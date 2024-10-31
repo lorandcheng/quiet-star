@@ -17,7 +17,7 @@ torch.manual_seed(random_seed)
 random.seed(random_seed)
 
 # MAIN SETUP
-root_prefix = "YOUR_CACHE_PATH_HERE"
+root_prefix = "~/scratch/quietSTAR/"
 wandb_cache_dir = root_prefix + "cache/quietstar/wandb_cache"
 dataset_name = 'open-web-math/open-web-math'
 # dataset_name = 'c4'
@@ -105,18 +105,20 @@ def model_init(params):
     return model
 
 # Load dataset
+import datasets
 dataset = load_dataset(
     dataset_name,
     "en" if "c4" in dataset_name else "default",
     split=f"train[:{n_examples}]",
-    ignore_verifications=True,
-    num_proc=16,
+    # ignore_verifications=True,
+    verification_mode=datasets.VerificationMode.NO_CHECKS,
+    # num_proc=16,
     cache_dir=root_prefix + "cache/datasets/",
 )
 
 train_dataset = dataset.shuffle(seed=random_seed).map(preprocess_function, batched=True, writer_batch_size=200)
-eval_dataset_gsm = load_dataset("gsm8k", "main", split="test", ignore_verifications=True).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
-eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split="validation", ignore_verifications=True).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
+eval_dataset_gsm = load_dataset("gsm8k", "main", split="test", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
+eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split="validation", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
 
 eval_datasets = {
     "gsm8k": eval_dataset_gsm,

@@ -106,7 +106,7 @@ torch.manual_seed(random_seed)
 random.seed(random_seed)
 
 # Load the GSM8K dataset and the model
-cot_dataset_gsm = load_dataset("gsm8k", "main", split="test", ignore_verifications=True).shuffle(seed=random_seed)
+cot_dataset_gsm = load_dataset("gsm8k", "main", split="test", verification_mode=datasets.VerificationMode.NO_CHECKS).shuffle(seed=random_seed)
 model = model_init(None)
 
 start_question = args.device_batch_size * args.batch_idx
