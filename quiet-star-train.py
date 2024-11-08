@@ -17,7 +17,7 @@ torch.manual_seed(random_seed)
 random.seed(random_seed)
 
 # MAIN SETUP
-root_prefix = "~/scratch/quietSTAR/"
+root_prefix = "./quietSTAR/"
 wandb_cache_dir = root_prefix + "cache/quietstar/wandb_cache"
 dataset_name = 'open-web-math/open-web-math'
 # dataset_name = 'c4'
@@ -29,8 +29,8 @@ n_passes_global = 2
 n_ahead_global = 12
 n_examples = 1_000
 full_batch_size = 8
-eval_and_logging_steps = 10
-save_steps = 100
+eval_and_logging_steps = 1
+save_steps = 5
 
 def model_init(params):
     original = False
@@ -145,10 +145,10 @@ training_args = TrainingArguments(
     logging_steps=eval_and_logging_steps,
     eval_steps=eval_and_logging_steps,
     evaluation_strategy="steps",
+    save_safetensors=False,
     save_steps=save_steps,
     run_name=f"n={n_ahead_global}_nt={n_ahead_talk_global}_np={n_passes_global}",
 )
-
 trainer = Trainer(
     args=training_args,
     train_dataset=train_dataset,
