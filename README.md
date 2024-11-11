@@ -7,3 +7,11 @@ This project is implemented by simply patching the base Mistral implementation i
 One pitfall to be wary of: the model is not taught not to generate start and end thought tokens. Thus, when performing actual inference, it is necessary to mask these out.
 
 We make an 8-thought-token ahead (including start and end tokens) model [available via Huggingface](https://huggingface.co/ezelikman/quietstar-8-ahead).
+
+# Installs
+```
+conda env create -f environment.yaml
+```
+Symlink `wandb` and `quietSTAR` directories to scratch
+
+

@@ -17,7 +17,7 @@ torch.manual_seed(random_seed)
 random.seed(random_seed)
 
 # MAIN SETUP
-root_prefix = "~/scratch/quietSTAR/"
+root_prefix = os.path.expanduser("~/scratch/quietSTAR/")
 wandb_cache_dir = root_prefix + "cache/quietstar/wandb_cache"
 dataset_name = 'open-web-math/open-web-math'
 # dataset_name = 'c4'
@@ -30,7 +30,8 @@ n_ahead_global = 12
 n_examples = 1_000
 full_batch_size = 8
 eval_and_logging_steps = 10
-save_steps = 100
+save_steps = 1
+checkpoint = os.path.expanduser('~/quietSTAR/cache/quietstar/1731014423/checkpoint-1')
 
 def model_init(params):
     original = False
@@ -52,7 +53,7 @@ def model_init(params):
     residual_think_head = params.get("residual_think_head", False)
     optimize_lm_head_only_at_start = params.get("optimize_lm_head_only_at_start", False)
 
-    model_name = "mistralai/Mistral-7B-v0.1"
+    model_name = "mistralai/Mistral-7B-v0.1" if checkpoint is None else checkpoint
     print("Loading model")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -96,7 +97,7 @@ def model_init(params):
     model.residual_think_head = residual_think_head
     model.optimize_lm_head_only_at_start = optimize_lm_head_only_at_start
     model.gumbel_temperature = gumbel_temperature
-    model.wandb_enabled = True
+    model.wandb_enabled = False
     model.original_mode = original
     model.config_params = params
     model.run_start = int(time.time())
@@ -145,6 +146,7 @@ training_args = TrainingArguments(
     logging_steps=eval_and_logging_steps,
     eval_steps=eval_and_logging_steps,
     evaluation_strategy="steps",
+    save_safetensors=False,
     save_steps=save_steps,
     run_name=f"n={n_ahead_global}_nt={n_ahead_talk_global}_np={n_passes_global}",
 )
