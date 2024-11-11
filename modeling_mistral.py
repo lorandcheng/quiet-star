@@ -1316,13 +1316,19 @@ class MistralForCausalLM(MistralPreTrainedModel):
         original_attention_mask = attention_mask.clone() if attention_mask is not None else None
 
         # Append the start thought token to the input sequence
+        #meta prompt version
+        """start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
+        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids("think step by step")
+        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id] + [meta_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
+        seq_len += 1 + len(meta_thought_token_id)"""
+
         start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
+        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]]* batch_size).to(input_ids.device)], dim=-1)
         seq_len += 1
 
         # Update the attention mask
         if attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
+            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1 + len(meta_thought_token_id))).to(attention_mask.device)], dim=-1)
 
         # Generate the continuation
         continuation_length = self.n_ahead - 2
@@ -1500,6 +1506,9 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         self.tokenizer_has_start_thought_token = True
         self.tokenizer_has_end_thought_token = True
+
+        #breakpoint()
+
         if self.start_token_id is None:
             self.start_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
             if self.start_token_id == 0:
@@ -1513,6 +1522,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 else:
                     self.start_embedding.data[0] = self.model.embed_tokens.weight.data[base_start_id].clone().detach() / self.embedding_scale
                 self.start_embedding.data[1] = torch.log(self.model.embed_tokens.weight.data.std(dim=0) * self.thought_init_std_scale / self.embedding_scale)
+        # above initializes the self.start_embedding as per last else with base_start_id as '---'
         if self.end_token_id is None:
             self.end_token_id = self.tokenizer.convert_tokens_to_ids("<|endthought|>")
             if self.end_token_id == 0:
@@ -1526,7 +1536,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 else:
                     self.end_embedding.data[0] = self.model.embed_tokens.weight.data[base_end_id].clone().detach() / self.embedding_scale
                 self.end_embedding.data[1] = torch.log(self.model.embed_tokens.weight.data.std(dim=0) * self.thought_init_std_scale / self.embedding_scale)
-
+        # rm_initialized is used as classifier head for talk? talk_head has outdim=1
         if not self.rm_initialized and (self.n_ahead > 1 or not self.base_original_mode):
             self.rm_initialized = True                        
             if not self.use_shallow_talk:

@@ -29,8 +29,8 @@ n_passes_global = 2
 n_ahead_global = 12
 n_examples = 1_000
 full_batch_size = 8
-eval_and_logging_steps = 10
-save_steps = 1
+eval_and_logging_steps = 1
+save_steps = 100
 checkpoint = os.path.expanduser('~/quietSTAR/cache/quietstar/1731014423/checkpoint-1')
 
 def model_init(params):
@@ -101,7 +101,7 @@ def model_init(params):
     model.original_mode = original
     model.config_params = params
     model.run_start = int(time.time())
-    model.kill_after = 100
+    model.kill_after = 1000
     model.train()
     return model
 
@@ -149,8 +149,8 @@ training_args = TrainingArguments(
     save_safetensors=False,
     save_steps=save_steps,
     run_name=f"n={n_ahead_global}_nt={n_ahead_talk_global}_np={n_passes_global}",
+    save_total_limit = 1, #running out of scratch storage, only save latest ckpt
 )
-
 trainer = Trainer(
     args=training_args,
     train_dataset=train_dataset,
@@ -160,3 +160,4 @@ trainer = Trainer(
 )
 
 trainer.train()
+#enter full path of checkpoint, including checkpoint-xxxx
