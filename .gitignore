@@ -3,3 +3,4 @@ quietSTAR/
 wandb
 wandb/
 *.pyc
+slurm_out/

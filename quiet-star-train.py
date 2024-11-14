@@ -31,7 +31,7 @@ n_examples = 1_000
 full_batch_size = 8
 eval_and_logging_steps = 1
 save_steps = 100
-checkpoint = os.path.expanduser('~/quietSTAR/cache/quietstar/1731014423/checkpoint-1')
+checkpoint = None #os.path.expanduser('~/quietSTAR/cache/quietstar/1731014423/checkpoint-1')
 
 def model_init(params):
     original = False
