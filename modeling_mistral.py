@@ -1328,7 +1328,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         # Update the attention mask
         if attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1 + len(meta_thought_token_id))).to(attention_mask.device)], dim=-1)
+            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
 
         # Generate the continuation
         continuation_length = self.n_ahead - 2
