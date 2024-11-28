@@ -1226,6 +1226,15 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.base_original_mode = False
         self.original_mode = False
 
+        self.meta_prompt_list = [
+            'identifying useful intermediate quantities',
+            'considering relevant problem parameters',
+            'exploring relationships between variables',
+            'next parameter to compute is',
+            'necessary variable to be known is',
+        ]
+        self.use_meta_prompt = True
+        self.meta_prompt_ids = None
         self.thought_prefix = "Let's think step by step"
         self.tokenized_thought_prefix = None #this is fine, they tokenize later
         self.log_dict = defaultdict(int)
@@ -1319,7 +1328,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
         # Append the start thought token to the input sequence
         # Meta prompt version
         start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids("Let's think step by step")
+        meta_prompt = np.random.choice(self.meta_prompt_list)
+        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids(meta_prompt)
         input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id] + [meta_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
         seq_len += 1 + len(meta_thought_token_id)
 
@@ -1477,6 +1487,10 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         if self.tokenized_thought_prefix is None and self.use_thought_prefix:
             self.tokenized_thought_prefix = self.tokenizer(self.thought_prefix, return_tensors="pt", add_special_tokens=False)["input_ids"]
+
+        self.meta_prompt = np.random.choice(self.meta_prompt_list)
+        if self.meta_prompt_ids is None and self.use_meta_prompt:
+            self.meta_prompt_ids = self.tokenizer(self.meta_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
 
         def apply_head(head, states, detach=False):
             if detach:
@@ -2091,6 +2105,26 @@ class MistralForCausalLM(MistralPreTrainedModel):
                                 # This will only happen when we force the next token to be the end of thought token
                                 break
                             dqn_loss_list.append(actor_loss.mean())
+            if ahead_idx == 0:
+                for i in range(len(self.meta_prompt_ids)):
+                    cur_meta_thought_id = self.meta_prompt_ids[:,i]
+                    cur_meta_thought_embedding = self.model.embed_tokens(cur_meta_thought_id)
+                    inputs_embeds = cur_meta_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
+                    # import ipdb; ipdb.set_trace()
+                    outputs = self.model(
+                        # input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_values=past_key_values,
+                        inputs_embeds=inputs_embeds,
+                        use_cache=use_cache,
+                        output_attentions=output_attentions,
+                        output_hidden_states=output_hidden_states,
+                        return_dict=return_dict,
+                    )
+
+                    hidden_states = outputs[0]
+
 
         if loss_list:
             if self.first_and_last_mode:
