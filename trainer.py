@@ -4144,8 +4144,6 @@ class Trainer:
 
         # Main evaluation loop
         for step, inputs in enumerate(dataloader):
-            if (step > 5):
-                break
             # Update the observed num examples
             observed_batch_size = find_batch_size(inputs)
             if observed_batch_size is not None:
