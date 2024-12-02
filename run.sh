@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -quietSTAR            # Job name  
+#SBATCH -JquietSTAR            # Job name  
 #SBATCH -N1 --gres=gpu:H100:8            # Number of nodes and cores per node required  
 #SBATCH --mem-per-gpu=80G
 #SBATCH --cpus-per-task=64              # Memory per CPU core, 8 CPUs/GPU 

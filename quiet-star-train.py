@@ -9,6 +9,7 @@ from transformers import TrainingArguments, Trainer
 import os
 import time
 import wandb
+import argparse
 #from huggingface_custom_callback import EarlyStoppingCallback
 #import wasn't used and caused import error lol
 from eval_helpers import preprocess_eval_function_gsm, preprocess_eval_function_csqa, preprocess_function, compute_metrics, truncate_or_pad
@@ -27,14 +28,19 @@ dataset_name = 'open-web-math/open-web-math'
 project_name = "quiet-star"
 os.environ["WANDB_PROJECT"] = project_name + "-" + dataset_name.split("/")[-1]
 os.environ["WANDB_CACHE_DIR"] = wandb_cache_dir
-n_ahead_talk_global = 4
-n_passes_global = 2
-n_ahead_global = 12
-n_examples = 1_000
-full_batch_size = 8
-eval_and_logging_steps = 10
-save_steps = 100
-checkpoint = None
+
+# Args
+parser = argparse.ArgumentParser()
+parser.add_argument("--n_ahead_talk_global", type=int, default=4)
+parser.add_argument("--n_passes_global", type=int, default=2)
+parser.add_argument("--n_ahead_global", type=int, default=12)
+parser.add_argument("--n_examples", type=int, default=1_000)
+parser.add_argument("--full_batch_size", type=int, default=8)
+parser.add_argument("--eval_and_logging_steps", type=int, default=10)
+parser.add_argument("--save_steps", type=int, default=100)
+parser.add_argument("--checkpoint", type=str, default=None)
+
+args = parser.parse_args()
 
 def model_init(params):
     original = False
@@ -43,9 +49,9 @@ def model_init(params):
     else:
         params = params.params
     # save params to file
-    n_ahead = params.get("n_ahead", n_ahead_global if not original else 1)
-    n_ahead_talk = params.get("n_ahead_talk", n_ahead_talk_global if not original else 1)
-    n_passes = params.get("n_passes", n_passes_global if not original else 1)
+    n_ahead = params.get("n_ahead", args.n_ahead_global if not original else 1)
+    n_ahead_talk = params.get("n_ahead_talk", args.n_ahead_talk_global if not original else 1)
+    n_passes = params.get("n_passes", args.n_passes_global if not original else 1)
     gumbel_temperature = params.get("gumbel_temperature", 1)
     use_start_thought_token = params.get("use_start_thought_token", True)
     use_end_thought_token = params.get("use_end_thought_token", True)
@@ -56,7 +62,7 @@ def model_init(params):
     residual_think_head = params.get("residual_think_head", False)
     optimize_lm_head_only_at_start = params.get("optimize_lm_head_only_at_start", False)
 
-    model_name = "mistralai/Mistral-7B-v0.1" if checkpoint is None else checkpoint
+    model_name = "mistralai/Mistral-7B-v0.1" if args.checkpoint is None else args.checkpoint
     print("Loading model")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -113,7 +119,7 @@ import datasets
 dataset = load_dataset(
     dataset_name,
     "en" if "c4" in dataset_name else "default",
-    split=f"train[:{n_examples}]",
+    split=f"train[:{args.n_exampl}]",
     # ignore_verifications=True,
     verification_mode=datasets.VerificationMode.NO_CHECKS,
     # num_proc=16,
@@ -129,8 +135,8 @@ eval_datasets = {
     "csqa": eval_dataset_csqa,
 }
 
-batch_size = full_batch_size // n_passes_global
-global_gradient_accumulation_steps = full_batch_size // batch_size
+batch_size = args.full_batch_size // args.n_passes_global
+global_gradient_accumulation_steps = args.full_batch_size // batch_size
 run_id = int(time.time())
 training_args = TrainingArguments(
     output_dir=root_prefix + f"cache/quietstar/{run_id}",
@@ -146,12 +152,12 @@ training_args = TrainingArguments(
     weight_decay=0.001,
     label_names=["labels"],
     include_inputs_for_metrics=True,
-    logging_steps=eval_and_logging_steps,
-    eval_steps=eval_and_logging_steps,
+    logging_steps=args.eval_and_logging_steps,
+    eval_steps=args.eval_and_logging_steps,
     evaluation_strategy="steps",
     save_safetensors=False,
-    save_steps=save_steps,
-    run_name=f"n={n_ahead_global}_nt={n_ahead_talk_global}_np={n_passes_global}",
+    save_steps=args.save_steps,
+    run_name=f"n={args.n_ahead_global}_nt={args.n_ahead_talk_global}_np={args.n_passes_global}",
     save_total_limit = 1, #running out of scratch storage, only save latest ckpt
 )
 trainer = Trainer(
