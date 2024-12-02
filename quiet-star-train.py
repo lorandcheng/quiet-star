@@ -34,6 +34,7 @@ n_examples = 1_000
 full_batch_size = 8
 eval_and_logging_steps = 10
 save_steps = 100
+checkpoint = None
 
 def model_init(params):
     original = False
