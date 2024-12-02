@@ -15,6 +15,9 @@ from eval_helpers import preprocess_eval_function_gsm, preprocess_eval_function_
 random_seed = 42
 torch.manual_seed(random_seed)
 random.seed(random_seed)
+import numpy as np
+np.random.seed(random_seed)
+
 
 # MAIN SETUP
 root_prefix = os.path.expanduser("~/scratch/quietSTAR/")
@@ -29,9 +32,8 @@ n_passes_global = 2
 n_ahead_global = 12
 n_examples = 1_000
 full_batch_size = 8
-eval_and_logging_steps = 1
+eval_and_logging_steps = 10
 save_steps = 100
-checkpoint = None #os.path.expanduser('~/quietSTAR/cache/quietstar/1731014423/checkpoint-1')
 
 def model_init(params):
     original = False
@@ -101,7 +103,7 @@ def model_init(params):
     model.original_mode = original
     model.config_params = params
     model.run_start = int(time.time())
-    model.kill_after = 1000
+    model.kill_after = 500
     model.train()
     return model
 
