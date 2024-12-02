@@ -1,2 +1,7 @@
 quietSTAR/cache
 wandb
+star_runs
+quietSTAR
+temp.png
+.vscode/
+*.pyc

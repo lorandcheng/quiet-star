@@ -1220,6 +1220,12 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.use_policy_loss = True
         self.include_policy_loss = True
         self.trice_mode = True
+        # self.use_meta_prompt = True
+        self.cycling_sot_token = False
+        # self.trice_mode_jakob_leave_one_out = True
+        self.reward_modeling = False
+        self.rm_beta = 0.1
+
         self.remove_negative_rewards = True
         self.use_policy_loss_for_end_thought = True
         
@@ -1270,7 +1276,14 @@ class MistralForCausalLM(MistralPreTrainedModel):
             talk_output_dim = 1
         else:
             talk_output_dim = config.hidden_size if self.use_shallow_talk else config.vocab_size
-
+        # if self.reward_modeling:
+        self.reward_modeling_head = nn.ModuleList([nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Linear(config.hidden_size, 1)
+        )])
         if not self.merged_lm_and_talk_heads:
             if self.use_complex_talk_head:
                 self.talk_head = nn.ModuleList([nn.Sequential(
@@ -1328,8 +1341,12 @@ class MistralForCausalLM(MistralPreTrainedModel):
         # Append the start thought token to the input sequence
         # Meta prompt version
         start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        meta_prompt = np.random.choice(self.meta_prompt_list)
-        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids(meta_prompt)
+        import ipdb; ipdb.set_trace()
+        if self.use_meta_prompt:
+            meta_prompt = np.random.choice(self.meta_prompt_list)
+            meta_thought_token_id = self.tokenizer.convert_tokens_to_ids(meta_prompt)
+        else:
+            meta_thought_token_id = []
         input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id] + [meta_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
         seq_len += 1 + len(meta_thought_token_id)
 
@@ -1489,8 +1506,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
             self.tokenized_thought_prefix = self.tokenizer(self.thought_prefix, return_tensors="pt", add_special_tokens=False)["input_ids"]
 
         self.meta_prompt = np.random.choice(self.meta_prompt_list)
-        if self.meta_prompt_ids is None and self.use_meta_prompt:
-            self.meta_prompt_ids = self.tokenizer(self.meta_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
+        # if self.meta_prompt_ids is None and self.use_meta_prompt:
+        self.meta_prompt_ids = self.tokenizer(self.meta_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
 
         def apply_head(head, states, detach=False):
             if detach:
@@ -1526,7 +1543,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
         #breakpoint()
         if self.start_token_id is None:
             self.start_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-            if self.start_token_id == 0:   #RELEVANT, need to update the checking conditions to accomodate for multiple tokens
+            if self.start_token_id == 0:   # RELEVANT, need to update the checking conditions to accomodate for multiple tokens
                 self.start_token_id = self.tokenizer.bos_token_id
                 self.tokenizer_has_start_thought_token = False
             elif self.use_start_thought_token:
@@ -1690,6 +1707,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         past_key_values_length,
                         sliding_window=self.config.sliding_window,
                     )
+            # import ipdb; ipdb.set_trace()
 
             outputs = self.model(
                 # input_ids=input_ids,
@@ -1892,7 +1910,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     with torch.set_grad_enabled(not self.train_only_thinking_embedding):
                         inputs_embeds = probabilities_2d @ (self.model.embed_tokens.weight.to(probabilities.device).to(probabilities.dtype))
                 else:
-                    thought_id = self.start_token_id if contains_start else self.end_token_id #RELEVANT
+                    thought_id = self.start_token_id if contains_start else self.end_token_id #RELEVANT???? this variable isn't used...
                     cur_thought_embedding = start_embedding if contains_start else end_embedding
                     if self.use_reparam_for_thought_embeddings:
                         inputs_embeds = torch.randn(batch_size, seq_len, self.model.config.hidden_size, device=input_ids.device, dtype=cur_thought_embedding.dtype)
@@ -1996,7 +2014,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                             cur_policy_reward_base_loss = loss_fct(
                                 cur_policy_shift_logits, cur_policy_shift_labels.to(cur_policy_shift_logits.device)
                             ).reshape(logits.shape[0], -1)
-                            original_dqn_reward = cur_policy_reward_base_loss.detach() - unreduced_loss
+                            original_dqn_reward = cur_policy_reward_base_loss.detach() - unreduced_loss # jakob: our reward is change in log likelihood from llm without thought.
                                 
                         if not did_skip_sampling:
                             nonzero_indices = prev_probabilities_2d.nonzero()
@@ -2007,7 +2025,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                             policy_reward = original_dqn_reward[:, :-(self.n_ahead_talk - shift_amount)]
                         else:
                             if self.n_ahead_talk > shift_amount:
-                                added_reward = original_dqn_reward[:, :-(self.n_ahead_talk - shift_amount)]
+                                added_reward = original_dqn_reward[:, :-(self.n_ahead_talk - shift_amount)] # jakob: I think this is off by one, should be (self.n_ahead_talk - shift_amount + 1) because with n_ahead_talk =1, this would reduce losses to only the first seq - 2 tokens, where it should be the first seq - 1 tokens. ??? Shouldn't make substantial difference.
                             else:
                                 added_reward = original_dqn_reward
                             policy_reward += added_reward
@@ -2104,14 +2122,22 @@ class MistralForCausalLM(MistralPreTrainedModel):
                             if action_loglikelihoods_2d.mean() < -1e4 and not self.use_policy_loss_just_for_thoughts:
                                 # This will only happen when we force the next token to be the end of thought token
                                 break
-                            dqn_loss_list.append(actor_loss.mean())
-            if ahead_idx == 0:
-                for i in range(len(self.meta_prompt_ids)):
-                    cur_meta_thought_id = self.meta_prompt_ids[:,i]
-                    cur_meta_thought_embedding = self.model.embed_tokens(cur_meta_thought_id)
-                    inputs_embeds = cur_meta_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
+
+                            # here I can replace the losses form the dqn with my reward modeling loss:
+                            if self.reward_modeling:
+                                mse_loss = (policy_reward - (self.rm_beta * action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device) + self.rm_beta * self.reward_modeling_head[0](base_hidden_states[..., :policy_reward.shape[-1], :].to(policy_reward.device)).squeeze(-1))) ** 2 # over the context ie input_ids? Then would want to get the loglikelihoods for the chosen actions as well as the reference actions? maybe just the chosen actions And add a beta term.
+                                dqn_loss_list.append(mse_loss.mean())
+                            else:
+                                dqn_loss_list.append(actor_loss.mean())
+            if ahead_idx == 0 and self.use_meta_prompt:
+                for i in range(len(self.meta_prompt_ids[0])):
                     # import ipdb; ipdb.set_trace()
-                    outputs = self.model(
+                    if past_key_values is not None:
+                        use_legacy_cache = not isinstance(past_key_values, Cache)
+                        if use_legacy_cache:
+                            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+                        past_key_values_length = past_key_values.get_usable_length(seq_len)
+                    outputs = self.model( # we don't overwrite the inputs_embeds. we first have to pass through the start of thought token.
                         # input_ids=input_ids,
                         attention_mask=attention_mask,
                         position_ids=position_ids,
@@ -2122,9 +2148,27 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         output_hidden_states=output_hidden_states,
                         return_dict=return_dict,
                     )
+                    original_attention = attention_mask[..., :attention_mask.shape[-2]]
+                    original_attention = original_attention == attention_mask.max()
+                    new_attention = torch.eye( # only took bfloat16 because we can only run this on h100 and a40 anyway. "next values to compute"
+                        seq_len, dtype=torch.float32, device=attention_mask.device
+                    ).to(attention_mask.dtype)
 
-                    hidden_states = outputs[0]
-
+                    new_attention = new_attention.view(1, 1, seq_len, seq_len).repeat(input_ids.shape[0], 1, 1, 1)
+                    new_attention = new_attention * original_attention
+                    new_attention[new_attention == 0] = attention_mask.min()
+                    new_attention[new_attention == 1] = attention_mask.max()
+                    attention_mask = torch.cat([attention_mask, new_attention], dim=-1)
+                    
+                    past_key_values = outputs.past_key_values
+                    position_ids = position_ids + 1
+                    cur_meta_thought_id = self.meta_prompt_ids[:,i].to(self.model.embed_tokens.weight.device)
+                    cur_meta_thought_embedding = self.model.embed_tokens(cur_meta_thought_id)
+                    inputs_embeds = cur_meta_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
+            elif ahead_idx == 0 and self.cycling_sot_token:
+                cur_meta_thought_id = self.meta_prompt_ids[:,0].to(self.model.embed_tokens.weight.device)
+                cur_meta_thought_embedding = self.model.embed_tokens(cur_meta_thought_id)
+                inputs_embeds = cur_meta_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
 
         if loss_list:
             if self.first_and_last_mode:
@@ -2161,11 +2205,11 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     loss += dqn_loss * self.policy_loss_beta
                 else:
                     loss = dqn_loss * self.policy_loss_beta
-
+        
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-    
+
         base_log_dict = {
             f"loss_{i}": nonzero_mean(loss_list[i]) for i in range(len(loss_list))
         }

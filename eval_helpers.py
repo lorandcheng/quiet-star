@@ -6,18 +6,22 @@ initial_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 initial_tokenizer.padding_side = "right"
 initial_tokenizer.pad_token_id = initial_tokenizer.eos_token_id
 eval_answer_marker="\nA:"
-
-def preprocess_function(examples):
-    dataset_transform = lambda xs: xs["text"]
-    all_tokenized = [initial_tokenizer.encode(t, return_tensors="pt") for t in dataset_transform(examples)]
-    new_tokenized = [{"input_ids": t} for t in all_tokenized]
-    for i, t in enumerate(new_tokenized):
-        new_tokenized[i]["input_ids"] = truncate_or_pad(t['input_ids'], initial_tokenizer.pad_token_id)
-    new_input_ids = torch.cat([t["input_ids"] for t in new_tokenized], dim=0)
-    new_attention_mask = (new_input_ids != initial_tokenizer.pad_token_id).long()
-    tokenized = {"input_ids": new_input_ids, "attention_mask": new_attention_mask}
-    tokenized["labels"] = tokenized["input_ids"].clone()
-    return tokenized
+def get_preprocess_function(max_length):
+    def preprocess_function(examples):
+        if isinstance(examples["text"], str):
+            dataset_transform = lambda xs: [xs["text"]]
+        else:
+            dataset_transform = lambda xs: xs["text"]
+        all_tokenized = [initial_tokenizer.encode(t, return_tensors="pt") for t in dataset_transform(examples)]
+        new_tokenized = [{"input_ids": t} for t in all_tokenized]
+        for i, t in enumerate(new_tokenized):
+            new_tokenized[i]["input_ids"] = truncate_or_pad(t['input_ids'], initial_tokenizer.pad_token_id, max_length)
+        new_input_ids = torch.cat([t["input_ids"] for t in new_tokenized], dim=0)
+        new_attention_mask = (new_input_ids != initial_tokenizer.pad_token_id).long()
+        tokenized = {"input_ids": new_input_ids, "attention_mask": new_attention_mask}
+        tokenized["labels"] = tokenized["input_ids"].clone()
+        return tokenized
+    return preprocess_function
 
 def preprocess_eval_function_gsm(examples, use_few_shot=False, max_length=256):
     to_answer = lambda q, a: "Q: " + q + eval_answer_marker + a.split("####")[-1] + "\n"
