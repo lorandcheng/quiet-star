@@ -1210,6 +1210,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.use_end_thought_token = True
         self.initialize_thought_embedding_to_normal = False
         self.initial_start_token = "---"
+        # self.initial_start_token = "--- META_PROMPT"
         self.initial_end_token = "---"
         self.output_logits_at_the_end = True
 
@@ -1225,8 +1226,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.base_original_mode = False
         self.original_mode = False
 
-        self.thought_prefix = "(Let's think step by step"
-        self.tokenized_thought_prefix = None
+        self.thought_prefix = "Let's think step by step"
+        self.tokenized_thought_prefix = None #this is fine, they tokenize later
         self.log_dict = defaultdict(int)
         self.eval_log_dict = defaultdict(int)
         self.print_final_only = True
@@ -1244,7 +1245,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.base_loss_beta = 1
 
         # Not used in the paper:
-        self.use_thought_prefix = False
+        self.use_thought_prefix = False #I tried naively turning this on, it seems like there is some logic handling this stuff but not complete
         self.use_reparam_for_thought_embeddings = False
         self.use_upper_triangular = False
         self.subtract_mean_reward = False
@@ -1316,19 +1317,20 @@ class MistralForCausalLM(MistralPreTrainedModel):
         original_attention_mask = attention_mask.clone() if attention_mask is not None else None
 
         # Append the start thought token to the input sequence
-        #meta prompt version
-        """start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids("think step by step")
-        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id] + [meta_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
-        seq_len += 1 + len(meta_thought_token_id)"""
-
+        # Meta prompt version
         start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]]* batch_size).to(input_ids.device)], dim=-1)
-        seq_len += 1
+        meta_thought_token_id = self.tokenizer.convert_tokens_to_ids("Let's think step by step")
+        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id] + [meta_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
+        seq_len += 1 + len(meta_thought_token_id)
+
+        #start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
+        #input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]]* batch_size).to(input_ids.device)], dim=-1)
+        #seq_len += 1
 
         # Update the attention mask
         if attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
+            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1 + len(meta_thought_token_id))).to(attention_mask.device)], dim=-1)
+            #attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
 
         # Generate the continuation
         continuation_length = self.n_ahead - 2
@@ -1508,18 +1510,19 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.tokenizer_has_end_thought_token = True
 
         #breakpoint()
-
         if self.start_token_id is None:
             self.start_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-            if self.start_token_id == 0:
+            if self.start_token_id == 0:   #RELEVANT, need to update the checking conditions to accomodate for multiple tokens
                 self.start_token_id = self.tokenizer.bos_token_id
                 self.tokenizer_has_start_thought_token = False
             elif self.use_start_thought_token:
                 # base_start_id = self.tokenizer.convert_tokens_to_ids(self.initial_start_token)
-                base_start_id = self.tokenizer.encode(self.initial_start_token, add_special_tokens=False)[0]
+                # RELEVANT
+                base_start_id = self.tokenizer.encode(self.initial_start_token, add_special_tokens=False)[0] #need to remove the [0] to get multiple tokens
                 if self.initialize_thought_embedding_to_normal:
                     self.start_embedding.data = torch.zeros_like(self.start_embedding.data)
                 else:
+                    #I think this is hard coded to only process the singular start of thought token
                     self.start_embedding.data[0] = self.model.embed_tokens.weight.data[base_start_id].clone().detach() / self.embedding_scale
                 self.start_embedding.data[1] = torch.log(self.model.embed_tokens.weight.data.std(dim=0) * self.thought_init_std_scale / self.embedding_scale)
         # above initializes the self.start_embedding as per last else with base_start_id as '---'
@@ -1591,14 +1594,16 @@ class MistralForCausalLM(MistralPreTrainedModel):
         prev_probabilities_2d = None
         policy_reward = None
         logits_to_output = None
-        batch_size, seq_len = input_ids.shape
+        batch_size, seq_len = input_ids.shape #RELEVANT, I hink we should be fine as log as we modify input_ids and the rest takes care of itself
         base_input_ids = input_ids.clone()
         loss_list = []
         dqn_loss_list = []
         sampled_token_history = []
         sample_probs_history = []
         action_loglikelihoods_list = []
-
+        
+        #import ipdb
+        #ipdb.set_trace()
         if self.use_end_thought_token or self.use_start_thought_token:
             if not self.use_reparam_for_thought_embeddings:
                 start_embedding = self.start_embedding[0].unsqueeze(0) * self.embedding_scale
@@ -1627,7 +1632,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 position_ids = position_ids.unsqueeze(0).view(-1, seq_len)
             else:
                 position_ids = position_ids.view(-1, seq_len).long()
-
+            #ipdb.set_trace()
+            #RELEVANT, the following if block
             if inputs_embeds is None:
                 contains_start = self.use_start_thought_token and (input_ids == self.start_token_id).any()
                 contains_end = self.use_end_thought_token and (input_ids == self.end_token_id).any()
@@ -1647,7 +1653,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 else:
                     with torch.set_grad_enabled(not self.train_only_thinking_embedding):
                         inputs_embeds = self.model.embed_tokens(input_ids)
-            
+            #RELEVANT, potentially, I think we're find since seq_len is already changed
             if self.n_ahead != 1 or self.n_ahead_talk != 1 or self.comparison_mode:
                 if attention_mask is None:
                     base_attention_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=0).to(input_ids.device)
@@ -1811,7 +1817,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     
                 # don't allow it to predict the thinking token
                 if self.tokenizer_has_start_thought_token:                    
-                    rm_logits[..., self.start_token_id] = -1e10
+                    rm_logits[..., self.start_token_id] = -1e10 #RELEVANT
                 if self.tokenizer_has_end_thought_token:
                     rm_logits[..., self.end_token_id] = -1e10
                 probabilities = rm_logits
@@ -1822,7 +1828,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 did_skip_sampling = skip_sampling
                 skip_sampling = False
                 if ahead_idx == 0 and self.use_start_thought_token:
-                    override_token = self.start_token_id
+                    override_token = self.start_token_id #RELEVANT
                 elif self.use_thought_prefix and ahead_idx < self.tokenized_thought_prefix.shape[-1]:
                     override_token = self.tokenized_thought_prefix[..., ahead_idx]
                 elif ahead_idx == self.n_ahead - 2 and self.use_end_thought_token:
@@ -1863,15 +1869,16 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         probabilities_2d = probabilities_2d.detach()
                 sampled_token_history.append(probabilities_2d.argmax(dim=-1).detach().cpu())
                 # convert rm logits directly to embeddings
-                contains_start = self.use_start_thought_token and (probabilities_2d[..., self.start_token_id].sum() > 0)
+                contains_start = self.use_start_thought_token and (probabilities_2d[..., self.start_token_id].sum() > 0) #RELEVANT
                 contains_end = self.use_end_thought_token and (probabilities_2d[..., self.end_token_id].sum() > 0)
                 contains_thought = contains_start or contains_end
-
+                #ipdb.set_trace()
+                #RELEVANT, following if-else block
                 if not contains_thought:
                     with torch.set_grad_enabled(not self.train_only_thinking_embedding):
                         inputs_embeds = probabilities_2d @ (self.model.embed_tokens.weight.to(probabilities.device).to(probabilities.dtype))
                 else:
-                    thought_id = self.start_token_id if contains_start else self.end_token_id
+                    thought_id = self.start_token_id if contains_start else self.end_token_id #RELEVANT
                     cur_thought_embedding = start_embedding if contains_start else end_embedding
                     if self.use_reparam_for_thought_embeddings:
                         inputs_embeds = torch.randn(batch_size, seq_len, self.model.config.hidden_size, device=input_ids.device, dtype=cur_thought_embedding.dtype)
@@ -1884,7 +1891,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         inputs_embeds = cur_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
                         inputs_embeds = inputs_embeds.view(probabilities.size(0), probabilities.size(1), -1).to(self.model.embed_tokens.weight.dtype)
                 inputs_embeds = inputs_embeds.view(probabilities.size(0), probabilities.size(1), -1).to(self.model.embed_tokens.weight.dtype)
-
+                # this encoders the start of thought token
                 if len(attention_mask.shape) == 2:
                     breakpoint()
                 else:
@@ -2240,6 +2247,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        #I think this should take care of itself since we update the ids and embeds
         if inputs_embeds is not None and past_key_values is None:
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
