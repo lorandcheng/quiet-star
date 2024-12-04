@@ -31,11 +31,11 @@ n_ahead_talk_global = 4
 n_passes_global = 2
 n_ahead_global = 12
 n_examples = 1_000
-full_batch_size = 8
-eval_and_logging_steps = 10
+full_batch_size = 2
+eval_and_logging_steps = 1
 save_steps = 100
 
-pct_test = 10
+pct_test = 5
 
 def model_init(params):
     original = False
@@ -105,7 +105,7 @@ def model_init(params):
     model.original_mode = original
     model.config_params = params
     model.run_start = int(time.time())
-    model.kill_after = 500
+    model.kill_after = 200
     model.train()
     return model
 
