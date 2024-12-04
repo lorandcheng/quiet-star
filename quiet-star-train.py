@@ -57,6 +57,7 @@ parser.add_argument("--eval_and_log_every", type=int, default=10) # eval and log
 parser.add_argument("--eval_pct", type=int, default=10) # cut eval short after this % of the dataset
 parser.add_argument("--save_steps", type=int, default=100)
 parser.add_argument("--checkpoint", type=str, default=None)
+parser.add_argument("--use_meta_prompt", action="store_true")
 
 args = parser.parse_args()
 
@@ -129,6 +130,7 @@ def model_init(params):
     model.config_params = params
     model.run_start = int(time.time())
     model.kill_after = args.train_steps
+    model.use_meta_prompt = args.use_meta_prompt
     model.train()
     return model
 
