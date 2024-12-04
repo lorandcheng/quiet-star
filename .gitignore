@@ -2,3 +2,5 @@ quietSTAR/cache
 wandb
 *.pyc
 *.out
+slurm_out/
+wandb/
