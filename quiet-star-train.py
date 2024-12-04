@@ -19,21 +19,21 @@ random.seed(random_seed)
 import numpy as np
 np.random.seed(random_seed)
 
-# Only eval on subset of eval dataset to save time
-class TrainerEvalSampling(Trainer):
-    def __init__(self, *args, eval_sample_size=16, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.eval_sample_size = eval_sample_size
-    def get_eval_dataloader(self, eval_dataset=None):
-        '''
-        Samples the evaluation dataset and returns a subset 
-        of size self.eval_sample_size.
-        '''
-        if eval_dataset is None:
-            eval_dataset = self.eval_dataset
-        idxs = random.sample(range(len(eval_dataset)), self.eval_sample_size)
-        eval_subset = eval_dataset.select(idxs)
-        return super().get_eval_dataloader(eval_subset)
+# # Only eval on subset of eval dataset to save time
+# class TrainerEvalSampling(Trainer):
+#     def __init__(self, *args, eval_sample_size=16, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.eval_sample_size = eval_sample_size
+#     def get_eval_dataloader(self, eval_dataset=None):
+#         '''
+#         Samples the evaluation dataset and returns a subset 
+#         of size self.eval_sample_size.
+#         '''
+#         if eval_dataset is None:
+#             eval_dataset = self.eval_dataset
+#         idxs = random.sample(range(len(eval_dataset)), self.eval_sample_size)
+#         eval_subset = eval_dataset.select(idxs)
+#         return super().get_eval_dataloader(eval_subset)
 
 
 # MAIN SETUP
@@ -54,13 +54,11 @@ parser.add_argument("--n_examples", type=int, default=1_000)
 parser.add_argument("--full_batch_size", type=int, default=8)
 parser.add_argument("--train_steps", type=int, default=1000) # kill after this many steps
 parser.add_argument("--eval_and_log_every", type=int, default=10) # eval and log after this many train steps
-parser.add_argument("--eval_steps", type=int, default=5) # cut eval short after this many steps
+parser.add_argument("--eval_pct", type=int, default=10) # cut eval short after this % of the dataset
 parser.add_argument("--save_steps", type=int, default=100)
 parser.add_argument("--checkpoint", type=str, default=None)
 
 args = parser.parse_args()
-
-pct_test = 10
 
 def model_init(params):
     original = False
@@ -139,7 +137,7 @@ import datasets
 dataset = load_dataset(
     dataset_name,
     "en" if "c4" in dataset_name else "default",
-    split=f"train[:{args.n_exampl}]",
+    split=f"train[:{args.n_examples}]",
     # ignore_verifications=True,
     verification_mode=datasets.VerificationMode.NO_CHECKS,
     # num_proc=16,
@@ -147,8 +145,8 @@ dataset = load_dataset(
 )
 
 train_dataset = dataset.shuffle(seed=random_seed).map(preprocess_function, batched=True, writer_batch_size=200)
-eval_dataset_gsm = load_dataset("gsm8k", "main", split=f"test[:{pct_test}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
-eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split=f"validation[:{pct_test}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
+eval_dataset_gsm = load_dataset("gsm8k", "main", split=f"test[:{args.eval_pct}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
+eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split=f"validation[:{args.eval_pct}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
 
 eval_datasets = {
     "gsm8k": eval_dataset_gsm,
@@ -180,8 +178,7 @@ training_args = TrainingArguments(
     run_name=f"n={args.n_ahead_global}_nt={args.n_ahead_talk_global}_np={args.n_passes_global}",
     save_total_limit = 1, #running out of scratch storage, only save latest ckpt
 )
-trainer = TrainerEvalSampling(
-    eval_sample_size=args.eval_steps,
+trainer = Trainer(
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=eval_datasets,
