@@ -3,4 +3,5 @@ quietSTAR/
 wandb
 wandb/
 *.pyc
+*.out
 slurm_out/
