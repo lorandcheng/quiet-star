@@ -35,6 +35,8 @@ full_batch_size = 8
 eval_and_logging_steps = 10
 save_steps = 100
 
+pct_test = 10
+
 def model_init(params):
     original = False
     if params is None:
@@ -120,8 +122,8 @@ dataset = load_dataset(
 )
 
 train_dataset = dataset.shuffle(seed=random_seed).map(preprocess_function, batched=True, writer_batch_size=200)
-eval_dataset_gsm = load_dataset("gsm8k", "main", split="test", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
-eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split="validation", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
+eval_dataset_gsm = load_dataset("gsm8k", "main", split=f"test[:{pct_test}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
+eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split=f"validation[:{pct_test}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
 
 eval_datasets = {
     "gsm8k": eval_dataset_gsm,

@@ -1,2 +1,4 @@
 quietSTAR/cache
 wandb
+*.pyc
+*.out
