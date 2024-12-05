@@ -179,6 +179,7 @@ training_args = TrainingArguments(
     save_steps=args.save_steps,
     run_name=f"n={args.n_ahead_global}_nt={args.n_ahead_talk_global}_np={args.n_passes_global}",
     save_total_limit = 1, #running out of scratch storage, only save latest ckpt
+    torch_empty_cache_steps = 10,
 )
 trainer = Trainer(
     args=training_args,
