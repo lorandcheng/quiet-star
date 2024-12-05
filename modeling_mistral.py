@@ -1233,7 +1233,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
             'next parameter to compute is',
             'necessary variable to be known is',
         ]
-        self.use_meta_prompt = True
+        self.use_meta_prompt = False
         self.meta_prompt_ids = None
         self.thought_prefix = "Let's think step by step"
         self.tokenized_thought_prefix = None #this is fine, they tokenize later
@@ -2105,7 +2105,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                                 # This will only happen when we force the next token to be the end of thought token
                                 break
                             dqn_loss_list.append(actor_loss.mean())
-            if ahead_idx == 0:
+            if ahead_idx == 0 and self.use_meta_prompt:
                 for i in range(len(self.meta_prompt_ids)):
                     cur_meta_thought_id = self.meta_prompt_ids[:,i]
                     cur_meta_thought_embedding = self.model.embed_tokens(cur_meta_thought_id)
