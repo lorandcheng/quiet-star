@@ -125,7 +125,7 @@ def model_init(params):
     model.residual_think_head = residual_think_head
     model.optimize_lm_head_only_at_start = optimize_lm_head_only_at_start
     model.gumbel_temperature = gumbel_temperature
-    model.wandb_enabled = False
+    model.wandb_enabled = True
     model.original_mode = original
     model.config_params = params
     model.run_start = int(time.time())
