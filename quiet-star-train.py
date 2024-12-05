@@ -1,49 +1,14 @@
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import random
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextGenerationPipeline, AutoConfig
-from accelerate import infer_auto_device_map, init_empty_weights, dispatch_model
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
-from torch.nn import CrossEntropyLoss
 from transformers import TrainingArguments, Trainer
 import os
 import time
-import wandb
 import argparse
-#from huggingface_custom_callback import EarlyStoppingCallback
-#import wasn't used and caused import error lol
-from eval_helpers import preprocess_eval_function_gsm, preprocess_eval_function_csqa, preprocess_function, compute_metrics, truncate_or_pad
-random_seed = 42
-torch.manual_seed(random_seed)
-random.seed(random_seed)
 import numpy as np
-np.random.seed(random_seed)
-
-# # Only eval on subset of eval dataset to save time
-# class TrainerEvalSampling(Trainer):
-#     def __init__(self, *args, eval_sample_size=16, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.eval_sample_size = eval_sample_size
-#     def get_eval_dataloader(self, eval_dataset=None):
-#         '''
-#         Samples the evaluation dataset and returns a subset 
-#         of size self.eval_sample_size.
-#         '''
-#         if eval_dataset is None:
-#             eval_dataset = self.eval_dataset
-#         idxs = random.sample(range(len(eval_dataset)), self.eval_sample_size)
-#         eval_subset = eval_dataset.select(idxs)
-#         return super().get_eval_dataloader(eval_subset)
-
-
-# MAIN SETUP
-root_prefix = os.path.expanduser("~/scratch/quietSTAR/")
-wandb_cache_dir = root_prefix + "cache/quietstar/wandb_cache"
-dataset_name = 'open-web-math/open-web-math'
-# dataset_name = 'c4'
-project_name = "quiet-star"
-os.environ["WANDB_PROJECT"] = project_name + "-" + dataset_name.split("/")[-1]
-os.environ["WANDB_CACHE_DIR"] = wandb_cache_dir
+from eval_helpers import preprocess_eval_function_gsm, preprocess_eval_function_csqa, preprocess_function, compute_metrics
 
 # Args
 parser = argparse.ArgumentParser()
@@ -58,8 +23,36 @@ parser.add_argument("--eval_pct", type=int, default=10) # cut eval short after t
 parser.add_argument("--save_steps", type=int, default=100)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--use_meta_prompt", action="store_true")
+parser.add_argument("--run_name", type=str, default=None)
+parser.add_argument("--group_name", type=str, default=None)
+parser.add_argument("--seed", type=int, default=42)
 
 args = parser.parse_args()
+
+# Set random seed
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(args.seed)
+
+# MAIN SETUP
+root_prefix = os.path.expanduser("~/scratch/quietSTAR/")
+wandb_cache_dir = root_prefix + "cache/quietstar/wandb_cache"
+dataset_name = 'open-web-math/open-web-math'
+# dataset_name = 'c4'
+project_name = "quiet-star"
+    
+os.environ["WANDB_ENTITY"] = "yixiong_hao-georgia-institute-of-technology"
+os.environ["WANDB_PROJECT"] = project_name + "-" + dataset_name.split("/")[-1]
+os.environ["WANDB_CACHE_DIR"] = wandb_cache_dir
+if args.group_name is not None:
+    os.environ["WANDB_RUN_GROUP"] = args.group_name
 
 def model_init(params):
     original = False
@@ -146,7 +139,7 @@ dataset = load_dataset(
     cache_dir=root_prefix + "cache/datasets/",
 )
 
-train_dataset = dataset.shuffle(seed=random_seed).map(preprocess_function, batched=True, writer_batch_size=200)
+train_dataset = dataset.shuffle(seed=args.seed).map(preprocess_function, batched=True, writer_batch_size=200)
 eval_dataset_gsm = load_dataset("gsm8k", "main", split=f"test[:{args.eval_pct}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_gsm, batched=True, writer_batch_size=200)
 eval_dataset_csqa = load_dataset("tau/commonsense_qa", "default", split=f"validation[:{args.eval_pct}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).map(preprocess_eval_function_csqa, batched=True, writer_batch_size=200)
 
@@ -177,7 +170,7 @@ training_args = TrainingArguments(
     evaluation_strategy="steps",
     save_safetensors=False,
     save_steps=args.save_steps,
-    run_name=f"n={args.n_ahead_global}_nt={args.n_ahead_talk_global}_np={args.n_passes_global}",
+    run_name=f"n={args.n_ahead_global}_nt={args.n_ahead_talk_global}_np={args.n_passes_global}" if args.run_name is None else args.run_name,
     save_total_limit = 1, #running out of scratch storage, only save latest ckpt
     torch_empty_cache_steps = 10,
 )

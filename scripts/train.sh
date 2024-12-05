@@ -1,14 +1,5 @@
-# defaults
-sbatch scripts/run_pace.sh python quiet-star-train.py 
+# # baseline
+# sbatch scripts/run.sh python quiet-star-train.py --run_name baseline
 
-# smaller batch size
-sbatch scripts/run_pace.sh python quiet-star-train.py --full_batch_size 4
-
-# eval more, less often
-sbatch scripts/run_pace.sh python quiet-star-train.py --eval_every 1000 --eval_steps 500
-
-# increase number of thoughts
-sbatch scripts/run_pace.sh python quiet-star-train.py --n_passes_global 4
-sbatch scripts/run_pace.sh python quiet-star-train.py --n_passes_global 8
-
-# TODO: other meta prompts
+# # baseline, with meta prompt
+# sbatch scripts/run.sh python quiet-star-train.py --use_meta_prompt --run_name meta_incorrect
