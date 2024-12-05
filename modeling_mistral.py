@@ -2200,6 +2200,11 @@ class MistralForCausalLM(MistralPreTrainedModel):
             self.training_steps += 1
         try:
             # if self.training_steps % (self.gradient_accumulation_steps * 256) == 0:
+            # detach all losses in log_dict
+            for key in list(log_dict.keys()):
+                if isinstance(log_dict[key], torch.Tensor):
+                    log_dict[key] = log_dict[key].detach()
+            
             if self.wandb_enabled:
                 if self.training_steps % (self.n_tokens_print) == 0 or not self.training:# and "0" in str(loss.device):
                     if not self.training:
