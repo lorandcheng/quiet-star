@@ -3,6 +3,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 import random
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
+import datasets
 import os
 import time
 import re
@@ -13,18 +14,21 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_idx", type=int, default=0)
 parser.add_argument("--baseline", action="store_true")
-parser.add_argument("--device_batch_size", type=int, default=8)
+parser.add_argument("--device_batch_size", type=int, default=1)
 parser.add_argument("--max_idx", type=int, default=128)
 parser.add_argument("--n_votes", type=int, default=8)
 parser.add_argument("--temp", type=float, default=0.9)
 parser.add_argument("--start_final_answer_idx", type=int, default=384)
 parser.add_argument("--answer_length", type=int, default=12)
-parser.add_argument("--root_prefix", type=str, default="YOUR_ROOT_HERE")
-parser.add_argument("--checkpoint", type=str, default="ezelikman/quietstar-8-ahead")
+parser.add_argument("--root_prefix", type=str, default="./quietSTAR/")
+parser.add_argument("--checkpoint", type=str, default="/nethome/jbjorner3/dev/hallucination-fun/quiet-star/quietSTAR/cache/quietstar/1733077878/checkpoint-100") # ezelikman/quietstar-8-ahead
 parser.add_argument("--final_answer_text", type=str, default="\nTherefore, the answer (arabic numerals) is")
 parser.add_argument("--zero_shot_cot_prompt", type=str, default="\nA: Let's think step by step.")
 parser.add_argument("--n_ahead", type=int, default=8)
 args = parser.parse_args()
+
+# Jakob added parameters
+pct_test = 1
 
 def model_init(params):
     if params is None:
@@ -106,7 +110,7 @@ torch.manual_seed(random_seed)
 random.seed(random_seed)
 
 # Load the GSM8K dataset and the model
-cot_dataset_gsm = load_dataset("gsm8k", "main", split="test", verification_mode=datasets.VerificationMode.NO_CHECKS).shuffle(seed=random_seed)
+cot_dataset_gsm = load_dataset("gsm8k", "main", split=f"test[:{pct_test}%]", verification_mode=datasets.VerificationMode.NO_CHECKS).shuffle(seed=random_seed)
 model = model_init(None)
 
 start_question = args.device_batch_size * args.batch_idx
@@ -134,7 +138,7 @@ for batch_start in tqdm(range(start_question, min(args.max_idx, end_question), b
         
         # Generate the solution
         with torch.no_grad():
-            finished_generating = torch.zeros(len(input_ids), dtype=torch.bool, device=input_ids.device)
+            finished_generating = torch.zeros(len(input_ids), dtype=torch.bool, device=input_ids.device) # Jakob's note: one bool per question not per token.
             for cur_token_idx in range(args.start_final_answer_idx + args.answer_length):
                 # Sample the next token
                 new_ids = model(
@@ -143,17 +147,17 @@ for batch_start in tqdm(range(start_question, min(args.max_idx, end_question), b
                 )['logits']
                 # Mask out the start and end thought tokens so we don't accidentally sample them
                 new_ids[:, :, model.tokenizer.vocab_size:] = -float("inf")
-                for list_idx, answer_idx in enumerate((~finished_generating).nonzero(as_tuple=True)[0]):
+                for list_idx, answer_idx in enumerate((~finished_generating).nonzero(as_tuple=True)[0]): # Jakob's note: this loops through all non finished questions in the batch
                     # Find the index of the last token that is not padding
                     base_answer_ids = input_ids[answer_idx]
                     new_answer_ids = new_ids[list_idx]
-                    last_token_idx = (base_answer_ids != model.tokenizer.pad_token_id).nonzero(as_tuple=True)[0].max()
+                    last_token_idx = (base_answer_ids != model.tokenizer.pad_token_id).nonzero(as_tuple=True)[0].max() # this has an impact when batch is larger than 1, but for batch size 1, we don't have padding
                     if args.temp == 0:
                         new_ids_sampled = torch.argmax(new_answer_ids[last_token_idx]).unsqueeze(0)
                     else:
-                        new_ids_sampled = torch.multinomial(torch.nn.functional.softmax(new_answer_ids[last_token_idx] / args.temp, dim=-1), 1)
+                        new_ids_sampled = torch.multinomial(torch.nn.functional.softmax(new_answer_ids[last_token_idx] / args.temp, dim=-1), 1) # Jakob: Why do we generate a distribution over every token????? This seems so wasteful??
                     # Assign the new id to the last token
-                    if last_token_idx + 1 >= len(base_answer_ids):
+                    if last_token_idx + 1 >= len(base_answer_ids): # just add room for a new token if there isn't already enough padding.
                         # Add padding everywhere
                         new_padding = torch.full((len(input_ids), 1), model.tokenizer.pad_token_id, dtype=torch.long, device=input_ids.device)
                         input_ids = torch.cat([input_ids, new_padding], dim=-1)

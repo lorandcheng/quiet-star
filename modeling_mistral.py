@@ -1223,8 +1223,10 @@ class MistralForCausalLM(MistralPreTrainedModel):
         # self.use_meta_prompt = True
         self.cycling_sot_token = False
         # self.trice_mode_jakob_leave_one_out = True
-        self.reward_modeling = False
+        self.use_rm_loss = False
         self.rm_beta = 0.1
+        self.rm_loss_beta = 1
+        self.only_train_rm_head = False
 
         self.remove_negative_rewards = True
         self.use_policy_loss_for_end_thought = True
@@ -1239,7 +1241,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
             'next parameter to compute is',
             'necessary variable to be known is',
         ]
-        self.use_meta_prompt = True
+        self.use_meta_prompt = False
         self.meta_prompt_ids = None
         self.thought_prefix = "Let's think step by step"
         self.tokenized_thought_prefix = None #this is fine, they tokenize later
@@ -1250,6 +1252,9 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.all_rewards = []
         self.all_unreduced_losses = []
         self.kill_after = 100
+        self.only_train_mixing_head = False
+        self.use_start_thought_embedding = False
+        self.use_end_thought_embedding = False
 
         self.start_embedding = nn.Parameter(torch.zeros(2, self.model.config.hidden_size))
         self.end_embedding = nn.Parameter(torch.zeros(2, self.model.config.hidden_size))
@@ -1483,7 +1488,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
         log_dict = self.log_dict if self.training else self.eval_log_dict
-
+        assert self.use_start_thought_embedding != self.use_start_thought_token and self.use_end_thought_embedding != self.use_end_thought_token, "must choose only one strategy either embeddings or tokens."
         if self.training and self.kill_after is not None and self.training_steps // self.gradient_accumulation_steps > self.kill_after:
             raise ValueError("Killed after")
 
@@ -1504,10 +1509,10 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         if self.tokenized_thought_prefix is None and self.use_thought_prefix:
             self.tokenized_thought_prefix = self.tokenizer(self.thought_prefix, return_tensors="pt", add_special_tokens=False)["input_ids"]
-
-        self.meta_prompt = np.random.choice(self.meta_prompt_list)
-        # if self.meta_prompt_ids is None and self.use_meta_prompt:
-        self.meta_prompt_ids = self.tokenizer(self.meta_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
+        if self.use_meta_prompt:
+            self.meta_prompt = np.random.choice(self.meta_prompt_list)
+            # if self.meta_prompt_ids is None and self.use_meta_prompt:
+            self.meta_prompt_ids = self.tokenizer(self.meta_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
 
         def apply_head(head, states, detach=False):
             if detach:
@@ -1541,14 +1546,11 @@ class MistralForCausalLM(MistralPreTrainedModel):
         self.tokenizer_has_end_thought_token = True
 
         #breakpoint()
-        if self.start_token_id is None:
+        if self.start_token_id is None: # Jakob: This code is only run on the first call to this model.
             self.start_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-            if self.start_token_id == 0:   # RELEVANT, need to update the checking conditions to accomodate for multiple tokens
-                self.start_token_id = self.tokenizer.bos_token_id
-                self.tokenizer_has_start_thought_token = False
-            elif self.use_start_thought_token:
+            if self.use_start_thought_token or self.use_start_thought_embedding:
                 # base_start_id = self.tokenizer.convert_tokens_to_ids(self.initial_start_token)
-                # RELEVANT
+
                 base_start_id = self.tokenizer.encode(self.initial_start_token, add_special_tokens=False)[0] #need to remove the [0] to get multiple tokens
                 if self.initialize_thought_embedding_to_normal:
                     self.start_embedding.data = torch.zeros_like(self.start_embedding.data)
@@ -1556,13 +1558,13 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     #I think this is hard coded to only process the singular start of thought token
                     self.start_embedding.data[0] = self.model.embed_tokens.weight.data[base_start_id].clone().detach() / self.embedding_scale
                 self.start_embedding.data[1] = torch.log(self.model.embed_tokens.weight.data.std(dim=0) * self.thought_init_std_scale / self.embedding_scale)
+            elif self.start_token_id == 0: 
+                self.start_token_id = self.tokenizer.bos_token_id
+                self.tokenizer_has_start_thought_token = False
         # above initializes the self.start_embedding as per last else with base_start_id as '---'
         if self.end_token_id is None:
             self.end_token_id = self.tokenizer.convert_tokens_to_ids("<|endthought|>")
-            if self.end_token_id == 0:
-                self.end_token_id = self.tokenizer.eos_token_id
-                self.tokenizer_has_end_thought_token = False
-            elif self.use_end_thought_token:
+            if self.use_end_thought_token or self.use_end_thought_embedding:
                 # base_end_id = self.tokenizer.convert_tokens_to_ids(self.initial_end_token)
                 base_end_id = self.tokenizer.encode(self.initial_end_token, add_special_tokens=False)[0]
                 if self.initialize_thought_embedding_to_normal:
@@ -1570,9 +1572,12 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 else:
                     self.end_embedding.data[0] = self.model.embed_tokens.weight.data[base_end_id].clone().detach() / self.embedding_scale
                 self.end_embedding.data[1] = torch.log(self.model.embed_tokens.weight.data.std(dim=0) * self.thought_init_std_scale / self.embedding_scale)
+            elif self.end_token_id == 0:
+                self.end_token_id = self.tokenizer.eos_token_id
+                self.tokenizer_has_end_thought_token = False
         # rm_initialized is used as classifier head for talk? talk_head has outdim=1
-        if not self.rm_initialized and (self.n_ahead > 1 or not self.base_original_mode):
-            self.rm_initialized = True                        
+        if not self.rm_initialized and (self.n_ahead > 1 or not self.base_original_mode): # Jakob: why don't they initialize their modules in the init function?
+            self.rm_initialized = True 
             if not self.use_shallow_talk:
                 head = self.talk_head[0]
                 cur_head = head[-1] if isinstance(head, nn.Sequential) else head
@@ -1607,8 +1612,12 @@ class MistralForCausalLM(MistralPreTrainedModel):
                             cur_head.weight.data = lambda_transform(cur_head)
                 else:
                     self.talk_head[-1].weight.data = lambda_transform(self.talk_head[0])
+            with torch.no_grad(): # Jakob: this is for training the reward modeling. It should be zero because our talk head enforces zero reward on beginning
+                self.reward_modeling_head[0][-1].weight.data.zero_()
+                self.reward_modeling_head[0][-1].bias.data.zero_()
 
         loss = None
+        rm_loss = None
         prev_rm_tokens = None
         cur_rm_tokens = None
         prev_rm_logits = None
@@ -1625,9 +1634,14 @@ class MistralForCausalLM(MistralPreTrainedModel):
         prev_probabilities_2d = None
         policy_reward = None
         logits_to_output = None
+        contains_start = False
+        contains_end = False
+        rm_anticipated_reward = None
+
         batch_size, seq_len = input_ids.shape #RELEVANT, I hink we should be fine as log as we modify input_ids and the rest takes care of itself
         base_input_ids = input_ids.clone()
         loss_list = []
+        rm_loss_list = []
         dqn_loss_list = []
         sampled_token_history = []
         sample_probs_history = []
@@ -1635,9 +1649,9 @@ class MistralForCausalLM(MistralPreTrainedModel):
         
         #import ipdb
         #ipdb.set_trace()
-        if self.use_end_thought_token or self.use_start_thought_token:
+        if self.use_end_thought_token or self.use_start_thought_token or self.use_start_thought_embedding or self.use_end_thought_embedding:
             if not self.use_reparam_for_thought_embeddings:
-                start_embedding = self.start_embedding[0].unsqueeze(0) * self.embedding_scale
+                start_embedding = self.start_embedding[0].unsqueeze(0) * self.embedding_scale # Jakob: we take only the embedding that is chosen as start embedding
                 end_embedding = self.end_embedding[0].unsqueeze(0) * self.embedding_scale
             else:
                 start_embedding = self.start_embedding * self.embedding_scale
@@ -1664,27 +1678,28 @@ class MistralForCausalLM(MistralPreTrainedModel):
             else:
                 position_ids = position_ids.view(-1, seq_len).long()
             #ipdb.set_trace()
-            #RELEVANT, the following if block
+
             if inputs_embeds is None:
-                contains_start = self.use_start_thought_token and (input_ids == self.start_token_id).any()
-                contains_end = self.use_end_thought_token and (input_ids == self.end_token_id).any()
-                contains_thought = contains_start or contains_end
+                contains_start_b = self.use_start_thought_token and (input_ids == self.start_token_id).any()
+                contains_end_b = self.use_end_thought_token and (input_ids == self.end_token_id).any()
+                contains_thought = contains_start_b or contains_end_b
                 if contains_thought:
-                    thought_id = self.start_token_id if contains_start else self.end_token_id
-                    cur_thought_embedding = start_embedding if contains_start else end_embedding
+                    import ipdb; ipdb.set_trace() # just to make sure this code doesn't run, else I have to make more changes to make use_start_thought_embedding work.
+                    thought_id = self.start_token_id if contains_start_b else self.end_token_id
+                    cur_thought_embedding = start_embedding if contains_start_b else end_embedding
                     if self.use_reparam_for_thought_embeddings:
                         inputs_embeds = torch.randn(batch_size, seq_len, self.model.config.hidden_size, device=input_ids.device, dtype=cur_thought_embedding.dtype)
                         inputs_embeds = inputs_embeds.detach() * torch.exp(cur_thought_embedding[1]) + cur_thought_embedding[0]
-                        if contains_start:
+                        if contains_start_b:
                             sampled_start = inputs_embeds.clone().detach()
-                        if contains_end:
+                        if contains_end_b:
                             sampled_end = inputs_embeds.clone().detach()
                     else:
-                        inputs_embeds = cur_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1)
+                        inputs_embeds = cur_thought_embedding.unsqueeze(0).repeat(batch_size, seq_len, 1) # this assumes all input_embeds should be thoughts.
                 else:
                     with torch.set_grad_enabled(not self.train_only_thinking_embedding):
-                        inputs_embeds = self.model.embed_tokens(input_ids)
-            #RELEVANT, potentially, I think we're find since seq_len is already changed
+                        inputs_embeds = self.model.embed_tokens(input_ids) # Jakob: this code is the only one to consider for their baseline impelmentation
+
             if self.n_ahead != 1 or self.n_ahead_talk != 1 or self.comparison_mode:
                 if attention_mask is None:
                     base_attention_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=0).to(input_ids.device)
@@ -1726,6 +1741,10 @@ class MistralForCausalLM(MistralPreTrainedModel):
             prev_rm_logits = rm_logits  # for policy gradient
             prev_rm_tokens = cur_rm_tokens  # for policy gradient
 
+            # whenever we have just passed in the end of thought embedding, this is where I can apply r(z, x) to create loss but also to store for later use in DPO.
+            if contains_end:
+                rm_anticipated_reward = self.reward_modeling_head[0](hidden_states.detach()).squeeze(-1) # because it came out an mlp
+
             if ahead_idx == 0:
                 hidden_states_lm = hidden_states
                 logits = self.lm_head(hidden_states_lm)
@@ -1757,15 +1776,21 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         head_input_hidden_states = torch.cat([cur_base_hidden, talk_hidden_states], dim=-1)
                     else:
                         head_input_hidden_states = talk_hidden_states
-
-                    residual_logits = self.talk_head[0](head_input_hidden_states)
+                    if self.only_train_mixing_head: 
+                        residual_logits = self.talk_head[0](head_input_hidden_states.detach())
+                    else:
+                        residual_logits = self.talk_head[0](head_input_hidden_states)
                     if self.use_shallow_talk:
                         residual_logits = apply_head(self.lm_head, residual_logits, detach=self.optimize_lm_head_only_at_start)                        
                     residual_logits = residual_logits.to(logits.device)
                     if self.use_weighted_talk_head:
                         # combine the cur_base_hidden with the talk_hidden_states according to the weighted head
-                        residual_logits = cur_base_hidden * (1 - residual_logits) + talk_hidden_states * residual_logits
-                        residual_logits = apply_head(self.lm_head, residual_logits, detach=self.optimize_lm_head_only_at_start)
+                        if self.only_train_mixing_head: 
+                            residual_logits = apply_head(self.lm_head, cur_base_hidden, detach=self.optimize_lm_head_only_at_start).detach() * (1 - residual_logits) + apply_head(self.lm_head, talk_hidden_states, detach=self.optimize_lm_head_only_at_start).detach() * residual_logits
+                            # residual_logits = apply_head(self.lm_head, residual_logits, detach=self.optimize_lm_head_only_at_start)
+                        else:
+                            residual_logits = cur_base_hidden * (1 - residual_logits) + talk_hidden_states * residual_logits
+                            residual_logits = apply_head(self.lm_head, residual_logits, detach=self.optimize_lm_head_only_at_start)
 
                 assert sum([self.cumulative_residual, self.clever_residual, self.skip_residual, self.no_residual]) == 1
                 if self.clever_residual:
@@ -1862,6 +1887,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 if ahead_idx == 0 and self.use_start_thought_token:
                     override_token = self.start_token_id #RELEVANT
                 elif self.use_thought_prefix and ahead_idx < self.tokenized_thought_prefix.shape[-1]:
+                    import ipdb; ipdb.set_trace() # Jakob: just make sure this also isn't run. else use_start_thought_embedding implementation might have to change.
                     override_token = self.tokenized_thought_prefix[..., ahead_idx]
                 elif ahead_idx == self.n_ahead - 2 and self.use_end_thought_token:
                     override_token = self.end_token_id
@@ -1901,16 +1927,23 @@ class MistralForCausalLM(MistralPreTrainedModel):
                         probabilities_2d = probabilities_2d.detach()
                 sampled_token_history.append(probabilities_2d.argmax(dim=-1).detach().cpu())
                 # convert rm logits directly to embeddings
-                contains_start = self.use_start_thought_token and (probabilities_2d[..., self.start_token_id].sum() > 0) #RELEVANT
-                contains_end = self.use_end_thought_token and (probabilities_2d[..., self.end_token_id].sum() > 0)
-                contains_thought = contains_start or contains_end
+
+                # use_start_thought_embedding
+                if self.use_start_thought_embedding or self.use_end_thought_embedding:
+                    contains_start = self.use_start_thought_embedding and ahead_idx == 0
+                    contains_end = self.use_end_thought_embedding and ahead_idx == self.n_ahead - 2
+                    contains_thought = contains_start or contains_end
+                else:
+                    contains_start = self.use_start_thought_token and (probabilities_2d[..., self.start_token_id].sum() > 0) #RELEVANT
+                    contains_end = self.use_end_thought_token and (probabilities_2d[..., self.end_token_id].sum() > 0)
+                    contains_thought = contains_start or contains_end
                 #ipdb.set_trace()
                 #RELEVANT, following if-else block
                 if not contains_thought:
                     with torch.set_grad_enabled(not self.train_only_thinking_embedding):
                         inputs_embeds = probabilities_2d @ (self.model.embed_tokens.weight.to(probabilities.device).to(probabilities.dtype))
                 else:
-                    thought_id = self.start_token_id if contains_start else self.end_token_id #RELEVANT???? this variable isn't used...
+                    # thought_id = self.start_token_id if contains_start else self.end_token_id # Jakob: I think this is old code thought_id isn't referenced anywhere.
                     cur_thought_embedding = start_embedding if contains_start else end_embedding
                     if self.use_reparam_for_thought_embeddings:
                         inputs_embeds = torch.randn(batch_size, seq_len, self.model.config.hidden_size, device=input_ids.device, dtype=cur_thought_embedding.dtype)
@@ -2101,33 +2134,66 @@ class MistralForCausalLM(MistralPreTrainedModel):
                                 self.all_rewards.extend(filtered_rewards)
                                 self.all_unreduced_losses.extend(unreduced_loss[:, :-1].flatten()[filtered_tokens_mask].float().flatten().cpu().detach().numpy())
                                 plot_kde(self.all_rewards, self.all_unreduced_losses)
-
-                        for action_loglikelihoods_2d in action_loglikelihoods_list:
-                            train_policy_reward = policy_reward
-
-                            # discard rewards below the mean
-                            if self.trice_mode and self.n_passes > 1:
-                                batched_policy_reward = train_policy_reward.reshape(-1, self.n_passes, train_policy_reward.shape[-1])
-                                # average over the passes
-                                train_policy_reward = batched_policy_reward - batched_policy_reward.mean(dim=1, keepdim=True)
-                                train_policy_reward = train_policy_reward.reshape(-1, train_policy_reward.shape[-1])
+                        
+                        rm_anticipated_reward = rm_anticipated_reward[:, :policy_reward.shape[-1]]
+                        # TODO: when the policy reward is going to be zero due to the mixing head, just ignore the rm_anticipated? or at least account for it somehow?
+                        # maybe just pay attention to expected log likelihood given x and y? baseline shouldn't hurt anything actually, and this doesn't solve the fact that the mixing head will determine how much the thought is used anyway.
+                        rm_mse_loss = ((rm_anticipated_reward - policy_reward.detach())**2).mean()
+                        rm_loss_list.append(rm_mse_loss)
+                        # TODO: record the performance of the policy in comparison to the reward model, If the reward model is correct, does the policy reflect its ratings,
+                        # do the same with a reward model defined by just which has highest reward. (also train this one. ie dpo basic.)
+                        if self.use_rm_loss:
+                            if self.n_passes == 1:
+                                # rm_loss_list.append(torch.zeros_like(policy_reward.mean()))
+                                dqn_loss_list.append(torch.zeros_like(policy_reward.mean())) # during eval we can't actually calculate a policy loss unless we generate two samples.
+                            else:
+                                # here I can replace the losses form the dqn with DPO loss dependant which has a coefficient depending on the exp of the reward model...:
                                 
-                            if self.subtract_mean_reward:
-                                train_policy_reward = train_policy_reward - train_policy_reward.mean()
-                            if self.remove_negative_rewards:
-                                fixed_policy_reward = train_policy_reward.detach().clamp(min=0)
-                            else:
-                                fixed_policy_reward = train_policy_reward.detach()
-                            actor_loss = -fixed_policy_reward * action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device)
-                            if action_loglikelihoods_2d.mean() < -1e4 and not self.use_policy_loss_just_for_thoughts:
-                                # This will only happen when we force the next token to be the end of thought token
-                                break
+                                rm_anticipated_reward = rm_anticipated_reward.detach() # so when it is used as a label it won't get gradients.
 
-                            # here I can replace the losses form the dqn with my reward modeling loss:
-                            if self.reward_modeling:
-                                mse_loss = (policy_reward - (self.rm_beta * action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device) + self.rm_beta * self.reward_modeling_head[0](base_hidden_states[..., :policy_reward.shape[-1], :].to(policy_reward.device)).squeeze(-1))) ** 2 # over the context ie input_ids? Then would want to get the loglikelihoods for the chosen actions as well as the reference actions? maybe just the chosen actions And add a beta term.
-                                dqn_loss_list.append(mse_loss.mean())
-                            else:
+                                assert self.n_passes == 2, "we only work for n_passes == 2"
+                                log_ratios = sum(action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device) for action_loglikelihoods_2d in action_loglikelihoods_list)
+                                # predicted_rewards_per_sequences = self.reward_modeling_head[0](base_hidden_states[..., :policy_reward.shape[-1], :].to(policy_reward.device))
+                                rm_p_0_win_1_lose = torch.sigmoid(rm_anticipated_reward[0::2] - rm_anticipated_reward[1::2])
+                                per_example_loss = - rm_p_0_win_1_lose * torch.nn.functional.logsigmoid(self.rm_beta * (log_ratios[0::2] - log_ratios[1::2])) # this assumes n_samples = 2
+                                per_example_loss += - (1 - rm_p_0_win_1_lose) * torch.nn.functional.logsigmoid(self.rm_beta * (log_ratios[1::2] - log_ratios[0::2])) # this assumes n_samples = 2
+                                dpo_policy_loss = per_example_loss.mean()
+                                with torch.no_grad():
+                                    reward_winning = self.rm_beta * ((log_ratios[0::2][rm_p_0_win_1_lose > 0.5].sum() + log_ratios[1::2][(1-rm_p_0_win_1_lose) > 0.5].sum()) / rm_p_0_win_1_lose.numel()).detach()
+                                    reward_losing = self.rm_beta * ((log_ratios[0::2][rm_p_0_win_1_lose < 0.5].sum() + log_ratios[1::2][(1-rm_p_0_win_1_lose) < 0.5].sum()) / rm_p_0_win_1_lose.numel()).detach()
+                                    ranking_acc = (((log_ratios[1::2][rm_p_0_win_1_lose > 0.5] < log_ratios[0::2][rm_p_0_win_1_lose > 0.5]).sum() + (log_ratios[1::2][rm_p_0_win_1_lose < 0.5] > log_ratios[0::2][rm_p_0_win_1_lose < 0.5]).sum()) / rm_p_0_win_1_lose.numel()).float().detach() # now it should be if we correctly say who is going to win 
+                                # return DPOStepOutput(loss=loss, reward_winning=reward_winning, reward_losing=reward_losing, ranking_acc=ranking_acc)
+                                # mse_loss = (policy_reward - (self.rm_beta * action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device) + self.rm_beta * self.reward_modeling_head[0](base_hidden_states[..., :policy_reward.shape[-1], :].to(policy_reward.device)).squeeze(-1))) ** 2 # over the context ie input_ids? Then would want to get the loglikelihoods for the chosen actions as well as the reference actions? maybe just the chosen actions And add a beta term.
+                                # dqn_loss_list.append(mse_loss.mean())
+                                log_dict['reward_winning'] += reward_winning / self.n_tokens_print
+                                log_dict['reward_losing'] += reward_losing / self.n_tokens_print
+                                log_dict['ranking_acc'] += ranking_acc / self.n_tokens_print
+                                # reward_winning_list.append(reward_winning)
+                                # reward_losing_list.append(reward_lossing)
+                                # TODO: see if there is more than one forward pass through this function, why is it a list? rewards are only at the end?????
+                                # ranking_acc_list.append(ranking_acc)
+                                dqn_loss_list.append(dpo_policy_loss)
+                        else:
+                            for action_loglikelihoods_2d in action_loglikelihoods_list:
+                                train_policy_reward = policy_reward
+
+                                # discard rewards below the mean
+                                if self.trice_mode and self.n_passes > 1:
+                                    batched_policy_reward = train_policy_reward.reshape(-1, self.n_passes, train_policy_reward.shape[-1])
+                                    # average over the passes
+                                    train_policy_reward = batched_policy_reward - batched_policy_reward.mean(dim=1, keepdim=True)
+                                    train_policy_reward = train_policy_reward.reshape(-1, train_policy_reward.shape[-1])
+                                    
+                                if self.subtract_mean_reward:
+                                    train_policy_reward = train_policy_reward - train_policy_reward.mean()
+                                if self.remove_negative_rewards:
+                                    fixed_policy_reward = train_policy_reward.detach().clamp(min=0)
+                                else:
+                                    fixed_policy_reward = train_policy_reward.detach()
+                                actor_loss = -fixed_policy_reward * action_loglikelihoods_2d[:, :policy_reward.shape[-1]].to(policy_reward.device)
+                                if action_loglikelihoods_2d.mean() < -1e4 and not self.use_policy_loss_just_for_thoughts:
+                                    # This will only happen when we force the next token to be the end of thought token
+                                    break
                                 dqn_loss_list.append(actor_loss.mean())
             if ahead_idx == 0 and self.use_meta_prompt:
                 for i in range(len(self.meta_prompt_ids[0])):
@@ -2198,6 +2264,14 @@ class MistralForCausalLM(MistralPreTrainedModel):
             
             loss = loss * self.base_loss_beta
 
+        if rm_loss_list:
+            rm_loss = sum(rm_loss_list) / len(rm_loss_list)
+            # if self.use_rm_loss:
+            if loss is not None:
+                loss += rm_loss * self.rm_loss_beta
+            else:
+                loss = rm_loss * self.rm_loss_beta
+
         if dqn_loss_list:
             dqn_loss = sum(dqn_loss_list) / len(dqn_loss_list)
             if self.include_policy_loss:
@@ -2205,41 +2279,47 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     loss += dqn_loss * self.policy_loss_beta
                 else:
                     loss = dqn_loss * self.policy_loss_beta
+
+        if self.only_train_rm_head:
+            loss = rm_loss
         
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
         base_log_dict = {
-            f"loss_{i}": nonzero_mean(loss_list[i]) for i in range(len(loss_list))
+            f"loss_{i}": nonzero_mean(loss_list[i]).detach() for i in range(len(loss_list))
         }
 
         if loss is not None:
-            base_log_dict["loss_train"] = loss.item()
+            base_log_dict["loss_train"] = loss.detach().item()
         
         for loss_key, loss_val in base_log_dict.items():
-            log_dict[loss_key] += loss_val / self.n_tokens_print
+            log_dict[loss_key] += loss_val / self.n_tokens_print 
                 
         if self.use_policy_loss and policy_reward is not None:
-            log_dict["policy_loss"] += dqn_loss / self.n_tokens_print
-            log_dict["policy_reward"] += policy_reward.mean() / self.n_tokens_print
+            log_dict["policy_loss"] += dqn_loss.detach() / self.n_tokens_print
+            log_dict["policy_reward"] += policy_reward.mean().detach() / self.n_tokens_print
+        # if self.use_rm_loss:
+        if rm_loss is not None:
+            log_dict['rm_loss'] += rm_loss.detach() / self.n_tokens_print # n_tokens_print is gradient accumulation.
 
         if not loss_list:
             if loss is not None:
-                log_dict["loss_0"] += loss / self.n_tokens_print
+                log_dict["loss_0"] += loss.detach() / self.n_tokens_print
         else:
-            log_dict["loss_final"] += nonzero_mean(loss_list[-1]) / self.n_tokens_print
-            log_dict["loss_talk"] += sum(nonzero_mean(cur_loss_item) for cur_loss_item in loss_list[-self.n_ahead_talk:]) / self.n_ahead_talk / self.n_tokens_print
+            log_dict["loss_final"] += nonzero_mean(loss_list[-1]).detach() / self.n_tokens_print
+            log_dict["loss_talk"] += sum(nonzero_mean(cur_loss_item) for cur_loss_item in loss_list[-self.n_ahead_talk:]).detach() / self.n_ahead_talk / self.n_tokens_print
 
         # also log relative losses to loss_0
         if loss_list:
             for i in range(len(loss_list)):
                 talk_idx = min(max(i - (self.n_ahead - 1), 0), len(talk_loss_list) - 1)
                 if not talk_loss_list:
-                    cur_talk_loss = nonzero_mean(loss_list[0])
+                    cur_talk_loss = nonzero_mean(loss_list[0]).detach()
                 else:
                     cur_talk_loss = talk_loss_list[talk_idx]
-                log_dict[f"rel_loss_{i}"] += (nonzero_mean(loss_list[i]) - cur_talk_loss) / self.n_tokens_print
+                log_dict[f"rel_loss_{i}"] += (nonzero_mean(loss_list[i]) - cur_talk_loss).detach() / self.n_tokens_print
         if self.training:
             self.training_steps += 1
         try:
@@ -2274,6 +2354,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
         if not self.training:
             self.n_ahead_talk = n_ahead_talk_to_restore
             self.n_passes = n_passes_to_restore
+
+        
         return CausalLMOutputWithPast(
             loss=loss if loss is not None else None,
             logits=(rm_logits if self.n_ahead > 1 else logits) if not self.output_logits_at_the_end else logits,

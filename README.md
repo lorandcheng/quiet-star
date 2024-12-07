@@ -7,3 +7,12 @@ This project is implemented by simply patching the base Mistral implementation i
 One pitfall to be wary of: the model is not taught not to generate start and end thought tokens. Thus, when performing actual inference, it is necessary to mask these out.
 
 We make an 8-thought-token ahead (including start and end tokens) model [available via Huggingface](https://huggingface.co/ezelikman/quietstar-8-ahead).
+
+
+python launch.py -m model_name="/nethome/jbjorner3/dev/hallucination-fun/quiet-star/quietSTAR/cache/quietstar/1733353818/checkpoint-500" only_train_rm_head=True rm_loss_beta=1 pct_test=10 optimizer_init=4
+
+python launch.py -m original_loss_weight=1 n_ahead_global=1 n_ahead_talk_global=1 policy_loss_beta=0 rm_loss_beta=0 optimizer_init=-1 debug_prefix=continuepretrainingmoreevalhigherbatchlr pct_test=50 lr=5e-6 gradient_accumulation_steps=16
+
+python launch.py -m train=False model_name="/nethome/jbjorner3/dev/hallucination-fun/quiet-star/quietSTAR/cache/quietstar/1733079553/checkpoint-100" pct_test=100
+
+python launch.py -m original_loss_weight=1 n_ahead_global=1 n_ahead_talk_global=1 policy_loss_beta=0 rm_loss_beta=0 optimizer_init=-1 debug_prefix=rmembscaling use_end_thought_token=False use_start_thought_token=False use_end_thought_embedding=True use_start_thought_embedding=True optimizer_init=3
